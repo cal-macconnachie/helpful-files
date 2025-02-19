@@ -1,0 +1,9 @@
+[user]
+	name = cal-macconnachie
+	email = cal@lmpm.com
+[push]
+	followTags = true
+[alias]
+open = "!f() { open $(git config remote.${1:-origin}.url | sed -E 's/:([^\\/])/\\/\\1/g' | sed -e 's/ssh:\\/\\///g' | sed -e 's/git@/https:\\/\\//g' | sed -e 's/\\.git$//g'); }; f"
+open-ci = "!f() { repo_name=$(basename -s .git $(git config remote.${1:-origin}.url)); current_branch_name=$(git rev-parse --abbrev-ref HEAD); open https://app.circleci.com/pipelines/github/LightmakerCanada/$repo_name?branch=$current_branch_name; }; f"
+up = "!f() { chmod +x ~/Repos/helpful-files/custom-commit-script && ~/Repos/helpful-files/custom-commit-script \"$@\"; }; f"

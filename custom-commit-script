@@ -23,7 +23,6 @@ show_help() {
     echo "  -h          Show this help message"
     echo "  -ci         Open current branch's CI workflows in CircleCI after push"
     echo "  -force      Add --force flag to all git push operations"
-    echo "  -pfo        Push to origin with force"
     echo "  -pfos       Squash all commits on the branch back to first commit and force push"
     echo "  -pr         Open pull request creation page in browser after push"
     echo "  -r          Rebase current branch onto default branch before pushing"
@@ -59,11 +58,11 @@ show_help() {
     echo "  - Combine flags for complex workflows:"
     echo "    custom-commit-script -f -r -pr m=\"feature complete\"  # Rebase, commit as feature, open PR"
     echo "    custom-commit-script -pfos -pr                        # Squash commits and open PR"
-    echo "    custom-commit-script -pfo -ci                         # Force push and check CI"
+    echo "    custom-commit-script -force -ci                         # Force push and check CI"
     echo ""
     echo "Notes:"
     echo "  - The script uses --no-verify to skip pre-commit hooks"
-    echo "  - Force push operations (-pfo, -pfos) should be used with caution"
+    echo "  - Force push operations (-force, -pfos) should be used with caution"
     echo "  - When using -r (rebase), resolve any conflicts if prompted"
     echo "  - The -pr flag will ensure your branch is pushed before opening the PR page"
     echo ""
@@ -207,6 +206,11 @@ handle_commit_and_push() {
     local prefix=$1
     local current_branch=$2
     local message=$3
+    local force_push=$4
+    # if force_push is undefined, then set it to false
+    if [[ -z "${force_push+x}" ]]; then
+        force_push=false
+    fi
     
     # Stage changes
     if ! execute_git_command "git add -u" "Failed to stage updated files"; then
@@ -305,9 +309,18 @@ handle_rebase() {
 
 # Update the section that handles open flags
 if has_param "-o" "$@" || has_param "-ci" "$@" || has_param "-pr" "$@"; then
-    # Check if m is defined and not empty
-    if ! [[ -z "${m+x}" ]] && [[ -z "$m" ]]; then
-        echo "No message provided."
+    # Check if branch has changes
+    if [[ -n $(git status --porcelain) ]]; then
+        # Branch is not clean, proceed with normal commit flow
+        # Check if m is defined and not empty
+        if ! [[ -z "${m+x}" ]] && [[ -z "$m" ]]; then
+            echo "No message provided."
+            if ! handle_commit_and_push "$prefix" "$current_branch" ""; then
+                exit 1
+            fi
+        fi
+    else
+        # Branch is clean, we can proceed directly to opening flags
         handle_open_flags "$@"
         exit 0
     fi
@@ -324,6 +337,19 @@ if has_param "-pfos" "$@"; then
     if [[ " ${protected_branches[@]} " =~ " ${current_branch} " ]] && ! has_param "-x" "$@"; then
         echo "Cannot squash commits on protected branches. Exiting."
         exit 1
+    fi
+    
+    # First commit any pending changes
+    if [[ -n $(git status --porcelain) ]]; then
+        if ! execute_git_command "git add -u" "Failed to stage updated files"; then
+            exit 1
+        fi
+        if ! execute_git_command "git add ." "Failed to stage new files"; then
+            exit 1
+        fi
+        if ! execute_git_command "git commit --no-verify -m '${prefix}(${formatted_branch}): WIP'" "Failed to commit changes"; then
+            exit 1
+        fi
     fi
     
     # Find common commit with protected branches

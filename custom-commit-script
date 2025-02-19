@@ -1,0 +1,462 @@
+#!/bin/zsh
+
+has_param() {
+    local term="$1"
+    shift
+    for arg; do
+        if [[ $arg == "$term" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+show_help() {
+    echo "LMPM Custom Commit Script"
+    echo ""
+    echo "Usage: custom-commit-script [options] [m=\"commit message\"]"
+    echo ""
+    echo "Options:"
+    echo "  -x          Skip branch protection check"
+    echo "  -f          Use 'feat' prefix for commit message (default is 'fix')"
+    echo "  -c          Use 'chore' prefix for commit message"
+    echo "  -o          Open current repo in your default browser after push"
+    echo "  -h          Show this help message"
+    echo "  -ci         Open current branch's CI workflows in CircleCI after push"
+    echo "  -force      Add --force flag to all git push operations"
+    echo "  -pfo        Push to origin with force"
+    echo "  -pfos       Squash all commits on the branch back to first commit and force push"
+    echo "  -pr         Open pull request creation page in browser after push"
+    echo "  -r          Rebase current branch onto default branch before pushing"
+    echo ""
+    echo "Branch Protection:"
+    echo "  Protected branches: development, staging, production, main, trunk, master"
+    echo "  When on a protected branch:"
+    echo "    - You'll be prompted to create a new branch unless -x is used"
+    echo "    - Squash operations (-pfos) are not allowed unless -x is used"
+    echo ""
+    echo "Commit Message Format:"
+    echo "  - Default format: prefix(branch-name): message"
+    echo "  - For LMP-123-feature-name branches, commit will use LMP-123 in the prefix"
+    echo "  - Prefixes: feat, fix (default), chore"
+    echo ""
+    echo "Common Use Cases:"
+    echo "  1. Quick fix on feature branch:"
+    echo "     custom-commit-script m=\"fix the bug\""
+    echo ""
+    echo "  2. New feature with PR:"
+    echo "     custom-commit-script -f -pr m=\"add new feature\""
+    echo ""
+    echo "  3. Cleanup branch history:"
+    echo "     custom-commit-script -pfos"
+    echo ""
+    echo "  4. Update branch with latest changes:"
+    echo "     custom-commit-script -r m=\"update from main\""
+    echo ""
+    echo "  5. Dependency updates:"
+    echo "     custom-commit-script -c m=\"update dependencies\""
+    echo ""
+    echo "Advanced Usage:"
+    echo "  - Combine flags for complex workflows:"
+    echo "    custom-commit-script -f -r -pr m=\"feature complete\"  # Rebase, commit as feature, open PR"
+    echo "    custom-commit-script -pfos -pr                        # Squash commits and open PR"
+    echo "    custom-commit-script -pfo -ci                         # Force push and check CI"
+    echo ""
+    echo "Notes:"
+    echo "  - The script uses --no-verify to skip pre-commit hooks"
+    echo "  - Force push operations (-pfo, -pfos) should be used with caution"
+    echo "  - When using -r (rebase), resolve any conflicts if prompted"
+    echo "  - The -pr flag will ensure your branch is pushed before opening the PR page"
+    echo ""
+    echo "Examples:"
+    echo "  Basic usage:"
+    echo "    custom-commit-script                      # Will prompt for commit message"
+    echo "    custom-commit-script m=\"fix bug\"          # Direct commit with message"
+    echo ""
+    echo "  Feature development:"
+    echo "    custom-commit-script -f m=\"new feature\"   # Commit new feature"
+    echo "    custom-commit-script -f -pr               # Commit and open PR"
+    echo ""
+    echo "  Maintenance:"
+    echo "    custom-commit-script -c m=\"update deps\"   # Commit dependency updates"
+    echo "    custom-commit-script -pfos                # Squash all commits"
+    echo "    custom-commit-script -r                   # Rebase on main branch"
+    exit 0
+}
+
+if has_param "-h" "$@"; then
+    show_help
+fi
+
+if has_param "-f" "$@" && has_param "-c" "$@"; then
+    echo "Error: Cannot use both -f (feat) and -c (chore) flags together"
+    exit 1
+fi
+
+execute_git_command() {
+    local cmd="$1"
+    local error_msg="$2"
+    
+    if ! eval "$cmd"; then
+        echo "$error_msg"
+        return 1
+    fi
+    return 0
+}
+
+# Function to open repo in browser
+open_repo() {
+    local url=$(git config remote.origin.url | sed -E 's/:([^\/])/\/\1/g' | sed -e 's/ssh:\/\///g' | sed -e 's/git@/https:\/\//g' | sed -e 's/\.git$//g')
+    open "$url"
+}
+
+# Function to open CircleCI for current branch
+open_ci() {
+    local repo_name=$(basename -s .git $(git config remote.origin.url))
+    local current_branch_name=$(git rev-parse --abbrev-ref HEAD)
+    open "https://app.circleci.com/pipelines/github/LightmakerCanada/$repo_name?branch=$current_branch_name"
+}
+
+# Function to open pull request
+open_pr() {
+    local url=$(git config remote.origin.url | sed -E 's/:([^\/])/\/\1/g' | sed -e 's/ssh:\/\///g' | sed -e 's/git@/https:\/\//g' | sed -e 's/\.git$//g')
+    local current_branch_name=$(git rev-parse --abbrev-ref HEAD)
+    local default_branch=$(git remote show origin | grep 'HEAD branch' | cut -d' ' -f5)
+    
+    # Construct PR URL - this format works for both GitHub and most GitLab instances
+    local pr_url="${url}/compare/${default_branch}...${current_branch_name}?expand=1"
+    open "$pr_url"
+}
+
+handle_open_flags() {
+    if has_param "-o" "$@"; then
+        open_repo
+    fi
+    if has_param "-ci" "$@"; then
+        open_ci
+    fi
+    if has_param "-pr" "$@"; then
+        open_pr
+    fi
+}
+
+# Move protected_branches definition to the top, after the helper functions
+protected_branches=("development" "staging" "production" "main" "trunk" "master")
+
+# Get current branch name - move this up before we use it
+current_branch=$(git rev-parse --abbrev-ref HEAD)
+
+formatted_branch=$(echo "$current_branch" | sed -E 's/^(LMP-[0-9]+).*/\1/')
+
+# Function to check if we're on a feature branch
+is_feature_branch() {
+    local current_branch=$1
+    
+    # First check if it's a protected branch
+    for branch in "${protected_branches[@]}"; do
+        if [[ "$current_branch" == "$branch" ]]; then
+            return 1
+        fi
+    done
+    
+    # Check if branch starts with LMP-
+    if [[ "$current_branch" =~ ^LMP- ]]; then
+        return 0
+    fi
+    
+    # If neither protected nor LMP branch, return false
+    return 1
+}
+
+is_protected_branch() {
+    local current_branch=$1
+    if [[ " ${protected_branches[@]} " =~ " ${current_branch} " ]]; then
+        return 0
+    fi
+    return 1
+}
+# if current branch is not a feature branch and not a protected branch then we need to get the branch name from the user
+# if the provided branch name is not valid, then we need to exit
+# if the provided branch name is valid, then we need to checkout and create the branch
+if ! is_feature_branch "$current_branch"; then
+  if ! is_protected_branch "$current_branch"; then
+    echo -n "Enter a new branch name to create and switch to (or press Enter to exit): "
+    read new_branch
+    if [[ -z "$new_branch" ]]; then
+        echo "No branch name provided. Exiting."
+        exit 1
+    fi
+    if [[ " ${protected_branches[@]} " =~ " ${new_branch} " ]]; then
+      echo "Cannot create a protected branch name. Exiting."
+      exit 1
+    fi
+    if ! is_feature_branch "$new_branch"; then
+      echo "Not a valid branch name. please use the format LMP-123 || LMP-123-feature-name Exiting."
+      exit 1
+    fi
+    if ! execute_git_command "git checkout -b '$new_branch'" "Failed to create and switch to branch '$new_branch'"; then
+        exit 1
+    fi
+    current_branch=$(git rev-parse --abbrev-ref HEAD)
+
+    formatted_branch=$(echo "$current_branch" | sed -E 's/^(LMP-[0-9]+).*/\1/')
+  fi
+fi
+
+# Function to handle commits and pushing
+handle_commit_and_push() {
+    local prefix=$1
+    local current_branch=$2
+    local message=$3
+    
+    # Stage changes
+    if ! execute_git_command "git add -u" "Failed to stage updated files"; then
+        return 1
+    fi
+    
+    if ! execute_git_command "git add ." "Failed to stage new files"; then
+        return 1
+    fi
+    
+    # Handle commit message
+    if [[ -n "$message" ]]; then
+        if ! execute_git_command "git commit --no-verify -m '${prefix}(${formatted_branch}): $message'" "Failed to commit changes"; then
+            return 1
+        fi
+    else
+        echo -n "Enter your commit message (or press Enter to use 'WIP'): "
+        read new_message
+        if [[ -z "$new_message" ]]; then
+            if ! execute_git_command "git commit --no-verify -m '${prefix}(${formatted_branch}): WIP'" "Failed to commit changes"; then
+                return 1
+            fi
+        else
+            if ! execute_git_command "git commit --no-verify -m '${prefix}(${formatted_branch}): $new_message'" "Failed to commit changes"; then
+                return 1
+            fi
+        fi
+    fi
+    
+    # Push changes
+    if has_param "-force" "$@"; then
+        if ! execute_git_command "git push --force --set-upstream --no-verify origin ${current_branch}" "Failed to push changes"; then
+            return 1
+        fi
+    else
+        if ! execute_git_command "git push --set-upstream --no-verify origin ${current_branch}" "Failed to push changes"; then
+            return 1
+        fi
+    fi
+    return 0
+}
+
+# Add this function after other function definitions but before the main logic
+handle_rebase() {
+    local current_branch=$1
+    local prefix=$2
+    local message=$3
+
+    if ! is_feature_branch "$current_branch"; then
+        echo "Cannot rebase from protected branch. Please switch to a feature branch."
+        return 1
+    fi
+
+    if [[ -n $(git status --porcelain) ]]; then
+        if ! handle_commit_and_push "$prefix" "$current_branch" "$message"; then
+            echo "Failed to commit changes before rebase. Please resolve any issues and try again."
+            return 1
+        fi
+    fi
+
+    local default_branch=$(git remote show origin | grep 'HEAD branch' | cut -d' ' -f5)
+    local feature_branch=$current_branch
+    
+    if ! execute_git_command "git checkout '$default_branch'" "Failed to checkout $default_branch"; then
+        return 1
+    fi
+    
+    if ! execute_git_command "git pull origin '$default_branch'" "Failed to pull latest changes from $default_branch"; then
+        execute_git_command "git checkout '$feature_branch'" "Failed to return to feature branch"
+        return 1
+    fi
+    
+    if ! execute_git_command "git checkout '$feature_branch'" "Failed to return to feature branch"; then
+        return 1
+    fi
+    
+    if ! execute_git_command "git rebase '$default_branch'" "Rebase failed. Please resolve conflicts manually."; then
+        echo "After resolving conflicts, run:"
+        echo "  git rebase --continue"
+        echo "  git push -f origin $feature_branch"
+        return 1
+    fi
+    
+    if has_param "-force" "$@"; then
+        if ! execute_git_command "git push --force --no-verify origin ${current_branch}" "Failed to push after rebase"; then
+            exit 1
+        fi
+    else
+        if ! execute_git_command "git push --no-verify origin ${current_branch}" "Failed to push after rebase"; then
+            exit 1
+        fi
+    fi
+    
+    return 0
+}
+
+# Update the section that handles open flags
+if has_param "-o" "$@" || has_param "-ci" "$@" || has_param "-pr" "$@"; then
+    # Check if m is defined and not empty
+    if ! [[ -z "${m+x}" ]] && [[ -z "$m" ]]; then
+        echo "No message provided."
+        handle_open_flags "$@"
+        exit 0
+    fi
+fi
+
+if has_param "-pfo" "$@"; then
+    if ! execute_git_command "git push --force --no-verify origin ${current_branch}" "Failed to force push to origin"; then
+        exit 1
+    fi
+    handle_open_flags "$@"
+    exit 0
+fi
+if has_param "-pfos" "$@"; then
+    if [[ " ${protected_branches[@]} " =~ " ${current_branch} " ]] && ! has_param "-x" "$@"; then
+        echo "Cannot squash commits on protected branches. Exiting."
+        exit 1
+    fi
+    
+    # Find common commit with protected branches
+    for branch in "${protected_branches[@]}"; do
+        common_commit=$(git merge-base ${current_branch} $branch)
+        if [[ -n "$common_commit" ]]; then
+            break
+        fi
+    done
+    
+    if [[ -z "$common_commit" ]]; then
+        echo "No common commit found between ${current_branch} and protected branches. Exiting."
+        exit 1
+    fi
+    
+    # Get the first commit after the common commit
+    first_commit=$(git rev-list ${current_branch} ^$common_commit --reverse | head -n 1)
+    prevMessage=$(git log -1 --pretty=%B $first_commit)
+
+    # Extract the prefix and message using simpler string operations
+    prefix="fix"  # default prefix
+    message="$prevMessage"
+    
+    # Check for feat(...):
+    if [[ "$prevMessage" == feat\(*\):* ]]; then
+        prefix="feat"
+        message="${prevMessage#feat\(*\): }"
+    # Check for fix(...):
+    elif [[ "$prevMessage" == fix\(*\):* ]]; then
+        prefix="fix"
+        message="${prevMessage#fix\(*\): }"
+    # Check for chore(...):
+    elif [[ "$prevMessage" == chore\(*\):* ]]; then
+        prefix="chore"
+        message="${prevMessage#chore\(*\): }"
+    fi
+
+    # Reset soft to the common commit
+    if ! execute_git_command "git reset --soft $common_commit" "Failed to reset to common commit"; then
+        exit 1
+    fi
+
+    # Create the squashed commit
+    if ! execute_git_command "git commit --no-verify -m '${prefix}(${formatted_branch}): ${message}'" "Failed to create squashed commit"; then
+        exit 1
+    fi
+    
+    # Force push the squashed changes
+    if ! execute_git_command "git push --force --no-verify origin ${current_branch}" "Failed to force push squashed changes"; then
+        exit 1
+    fi
+    
+    handle_open_flags "$@"
+    exit 0
+fi
+if [[ " ${protected_branches[@]} " =~ " ${current_branch} " ]] && ! has_param "-x" "$@"; then
+    echo -n "Enter a new branch name to create and switch to (or press Enter to exit): "
+    read new_branch
+    if [[ -z "$new_branch" ]]; then
+        echo "No branch name provided. Exiting."
+        exit 1
+    else
+        # Validate new branch name doesn't match protected branches
+        if [[ " ${protected_branches[@]} " =~ " ${new_branch} " ]]; then
+            echo "Cannot create a protected branch name. Exiting."
+            exit 1
+        fi
+        if ! execute_git_command "git checkout -b '$new_branch'" "Failed to create and switch to branch '$new_branch'"; then
+            exit 1
+        fi
+        current_branch=$(git rev-parse --abbrev-ref HEAD)
+        formatted_branch=$(echo "$current_branch" | sed -E 's/^(LMP-[0-9]+).*/\1/')
+    fi
+fi
+if ! execute_git_command "git add -u" "Failed to stage updated files"; then
+    exit 1
+fi
+if ! execute_git_command "git add ." "Failed to stage new files"; then
+    exit 1
+fi
+for ARGUMENT in "$@"
+do
+  if [[ "$ARGUMENT" == *"="* ]]; then
+    KEY=${ARGUMENT%%=*}
+    VALUE=${ARGUMENT#*=}
+    # Use eval to properly handle the assignment with proper escaping
+    eval "$KEY=$(printf '%q' "$VALUE")"
+  fi
+done
+prefix="fix"
+if has_param "-f" "$@"; then
+    prefix="feat"
+fi
+
+if has_param "-c" "$@"; then
+    prefix="chore"
+fi
+
+if [[ -n "$m" ]]; then
+    if ! execute_git_command "git commit --no-verify -m '${prefix}(${formatted_branch}): $m'" "Failed to commit changes"; then
+        exit 1
+    fi
+else
+    echo -n "Enter your commit message (or press Enter to use 'WIP'): "
+    read new_message
+    if [[ -z "$new_message" ]]; then
+        if ! execute_git_command "git commit --no-verify -m '${prefix}(${formatted_branch}): WIP'" "Failed to commit changes"; then
+            exit 1
+        fi
+    else
+        if ! execute_git_command "git commit --no-verify -m '${prefix}(${formatted_branch}): $new_message'" "Failed to commit changes"; then
+            exit 1
+        fi
+    fi
+fi
+
+# Add this block before the final push section (before the last git push command)
+if has_param "-r" "$@"; then
+    if ! handle_rebase "$current_branch" "$prefix" "$m"; then
+        exit 1
+    fi
+    handle_open_flags "$@"
+    exit 0
+fi
+
+if has_param "-force" "$@"; then
+    if ! execute_git_command "git push --force --no-verify origin ${current_branch}" "Failed to push to origin"; then
+        exit 1
+    fi
+else
+    if ! execute_git_command "git push --no-verify origin ${current_branch}" "Failed to push to origin"; then
+        exit 1
+    fi
+fi
+
+handle_open_flags "$@"

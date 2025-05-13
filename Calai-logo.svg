@@ -17,17 +17,17 @@
   <!-- Golden ratio constants: 1024/1.618 = ~633px -->
   
   <!-- Creative C letter - centered on golden ratio point -->
-  <path d="M633 391 
-          C580 320 480 290 390 320 
-          C300 350 250 430 250 512 
-          C250 594 300 674 390 704
-          C480 734 580 704 633 633" 
+  <path d="M753 391 
+          C700 320 600 290 510 320 
+          C420 350 370 430 370 512 
+          C370 594 420 674 510 704
+          C600 734 700 704 753 633" 
         stroke="#FFFFFF" stroke-width="120" stroke-linecap="round"
-        fill="none"  opacity="0.7" />
+        fill="none" opacity="0.7" />
   
   <!-- Subtle AI chat bubble - positioned using golden ratio sequence -->
-  <circle cx="633" cy="512" r="13" fill="#FFFFFF" filter="url(#dropShadow)"  opacity="0.7"/>
-  <circle cx="681.69" cy="512" r="17" fill="#FFFFFF" filter="url(#dropShadow)"  opacity="0.7" />
-  <circle cx="730.38" cy="512" r="13" fill="#FFFFFF" filter="url(#dropShadow)"  opacity="0.7" />
+  <circle cx="754" cy="512" r="13" fill="#FFFFFF" filter="url(#dropShadow)"  opacity="0.7"/>
+  <circle cx="802.69" cy="512" r="17" fill="#FFFFFF" filter="url(#dropShadow)"  opacity="0.7" />
+  <circle cx="851.38" cy="512" r="13" fill="#FFFFFF" filter="url(#dropShadow)"  opacity="0.7" />
 </svg>
 <!--  -->

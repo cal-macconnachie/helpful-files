@@ -1,0 +1,176 @@
+#!/bin/zsh
+
+# Folder Finder Script
+# Usage: ./folder-finder <folder-name>
+# Usage: ./folder-finder -install (to install as global 'copen' command)
+# Searches for folders matching the exact name and opens them in available editor
+
+# Function to install the script globally
+install_script() {
+    local script_path="$1"
+    echo "🔧 Installing folder-finder as global 'copen' command..."
+    
+    TARGET_PATH="/usr/local/bin/folder-finder"
+    ALIAS_PATH="/usr/local/bin/copen"
+    
+    echo "Script path: $script_path"
+    
+    # Check if /usr/local/bin exists, create if it doesn't
+    if [ ! -d "/usr/local/bin" ]; then
+        echo "Creating /usr/local/bin directory..."
+        sudo mkdir -p /usr/local/bin
+    fi
+    
+    # Copy the script to /usr/local/bin
+    echo "Copying script to $TARGET_PATH..."
+    sudo cp "$script_path" "$TARGET_PATH"
+    
+    # Make it executable
+    echo "Making script executable..."
+    sudo chmod +x "$TARGET_PATH"
+    
+    # Create symlink for 'copen' command
+    echo "Creating 'copen' command alias..."
+    sudo ln -sf "$TARGET_PATH" "$ALIAS_PATH"
+    
+    echo "✅ Installation complete!"
+    echo "You can now use 'copen <folder-name>' from anywhere in your terminal."
+    echo "Example: copen lambda-payment"
+    
+    # Check if /usr/local/bin is in PATH
+    if [[ ":$PATH:" != *":/usr/local/bin:"* ]]; then
+        echo ""
+        echo "⚠️  Note: /usr/local/bin is not in your PATH."
+        echo "Add this line to your ~/.zshrc file:"
+        echo "export PATH=\"/usr/local/bin:\$PATH\""
+        echo "Then run: source ~/.zshrc"
+    fi
+    
+    exit 0
+}
+
+# Get the absolute path of the current script (do this early before any function calls)
+SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
+# Check for -install flag
+if [ "$1" = "-install" ]; then
+    install_script "$SCRIPT_PATH"
+fi
+
+# Check if folder name argument is provided
+if [ $# -eq 0 ]; then
+    echo "Usage: $0 <folder-name>"
+    echo "Usage: $0 -install (to install as global 'copen' command)"
+    echo "Example: $0 lambda-payment"
+    exit 1
+fi
+
+FOLDER_NAME="$1"
+echo "🔍 Searching for folder named: '$FOLDER_NAME'..."
+
+# Create temporary file to store results
+TEMP_FILE=$(mktemp)
+trap 'rm -f "$TEMP_FILE"' EXIT
+
+# Common development directories to search in (much faster than full home directory)
+SEARCH_DIRS=(
+    "$HOME/Desktop"
+    "$HOME/Documents"
+    "$HOME/Downloads"
+    "$HOME/Repos"
+    "$HOME/Projects"
+    "$HOME/Code"
+    "$HOME/Development"
+    "$HOME/dev"
+    "$HOME/workspace"
+    "$HOME/work"
+)
+
+# Search in common development directories only
+echo "Searching in common development directories..."
+for search_dir in "${SEARCH_DIRS[@]}"; do
+    if [ -d "$search_dir" ]; then
+        echo "  Checking: $search_dir"
+        # Use find with maxdepth to limit how deep we search (faster)
+        find "$search_dir" -maxdepth 3 -type d -name "$FOLDER_NAME" \
+            -not -path "*/.*" \
+            -not -path "*/node_modules/*" \
+            -not -path "*/Library/*" \
+            2>/dev/null >> "$TEMP_FILE"
+    fi
+done
+
+# If no folders found, do a slightly broader but still limited search
+if [ ! -s "$TEMP_FILE" ]; then
+    echo "Not found in common directories. Searching more broadly (max depth 2)..."
+    find "$HOME" -maxdepth 2 -type d -name "$FOLDER_NAME" \
+        -not -path "*/.*" \
+        -not -path "*/Applications/*" \
+        -not -path "*/Public/*" \
+        -not -path "*/Library/*" \
+        -not -path "*/.Trash/*" \
+        2>/dev/null >> "$TEMP_FILE"
+fi
+
+# Check if any folders were found
+if [ ! -s "$TEMP_FILE" ]; then
+    echo "❌ No folder named '$FOLDER_NAME' found."
+    echo "Searched in common development directories and home directory (depth 2)"
+    echo "Try running: find $HOME -name '$FOLDER_NAME' -type d 2>/dev/null"
+    exit 1
+fi
+
+# Count folders and display them
+folder_count=$(wc -l < "$TEMP_FILE")
+
+if [ "$folder_count" -eq 1 ]; then
+    SELECTED_FOLDER=$(cat "$TEMP_FILE")
+    echo "✅ Found folder: $SELECTED_FOLDER"
+else
+    echo "✅ Found $folder_count folders named '$FOLDER_NAME':"
+    i=1
+    while IFS= read -r folder; do
+        echo "  $i. $folder"
+        i=$((i + 1))
+    done < "$TEMP_FILE"
+    
+    echo -n "Select folder to open (1-$folder_count): "
+    read -r choice
+    
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$folder_count" ]; then
+        SELECTED_FOLDER=$(sed -n "${choice}p" "$TEMP_FILE")
+        echo "Selected: $SELECTED_FOLDER"
+    else
+        echo "❌ Invalid selection. Exiting."
+        exit 1
+    fi
+fi
+
+# Function to check if a command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Try to open the folder in the appropriate application
+echo "🚀 Opening folder: $SELECTED_FOLDER"
+
+# 1. Try Cursor first
+if command_exists cursor; then
+    cursor "$SELECTED_FOLDER"
+    exit 0
+fi
+
+# 2. Try VSCode if Cursor not available
+if command_exists code; then
+    code "$SELECTED_FOLDER"
+    exit 0
+fi
+
+# 3. Fall back to Finder
+if command_exists open; then
+    open "$SELECTED_FOLDER"
+    exit 0
+else
+    echo "❌ Could not open folder. Please navigate to: $SELECTED_FOLDER"
+    exit 1
+fi 

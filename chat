@@ -14,6 +14,7 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+GRAY='\033[0;90m'
 NC='\033[0m' # No Color
 
 # Function to print colored text
@@ -27,6 +28,7 @@ print_color() {
 format_ai_response() {
     local response="$1"
     local in_code_block=false
+    local in_thinking_block=false
     local code_language=""
     local temp_file=$(mktemp)
     
@@ -38,6 +40,45 @@ format_ai_response() {
     printf "\r"
     printf "    "
     while IFS= read -r line || [[ -n "$line" ]]; do
+        # Check for thinking block start/end
+        if [[ "$line" == *"<|thinking|>"* ]]; then
+            # Starting thinking block
+            in_thinking_block=true
+            printf "\r"
+            print_color "$GRAY" "┌─ thinking..."
+            # Handle any content after the opening tag on the same line
+            thinking_content="${line#*<|thinking|>}"
+            if [[ -n "$thinking_content" ]]; then
+                print_color "$GRAY" "│ $thinking_content"
+            fi
+            continue
+        elif [[ "$line" == *"</|thinking|>"* ]]; then
+            # Extract content before the closing tag
+            before_close="${line%</|thinking|>*}"
+            after_close="${line#*</|thinking|>}"
+            
+            # Print content before closing tag in gray if we're in thinking mode
+            if [[ -n "$before_close" && "$in_thinking_block" == "true" ]]; then
+                print_color "$GRAY" "│ $before_close"
+            fi
+            
+            # End thinking block
+            if [[ "$in_thinking_block" == "true" ]]; then
+                print_color "$GRAY" "└─"
+                in_thinking_block=false
+            fi
+            
+            # Print content after closing tag normally
+            if [[ -n "$after_close" ]]; then
+                echo -e "$after_close"
+            fi
+            continue
+        elif [[ "$in_thinking_block" == "true" ]]; then
+            # Inside thinking block - use gray color
+            print_color "$GRAY" "│ $line"
+            continue
+        fi
+        
         # Check for code block start/end (handle leading spaces)
         if [[ "$line" =~ ^[[:space:]]*\`\`\`(.*)$ ]]; then
             if [[ "$in_code_block" == "false" ]]; then
@@ -109,6 +150,7 @@ send_message() {
     local temp_file=$(mktemp)
     local first_chunk_received=false
     local terminal_width=$(tput cols)
+    local in_thinking_block=false
     
     # Start thinking animation in background
     (
@@ -159,8 +201,41 @@ send_message() {
                     fi
                     # Decode <<NEWLINE>> back to actual newlines
                     decoded_chunk=$(echo "$chunk" | sed 's/<<NEWLINE>>/\n/g')
-                    # Print chunk immediately for streaming effect AND accumulate
-                    printf "%s" "$decoded_chunk"
+                    
+                    # Check for thinking block markers in the chunk
+                    if [[ "$decoded_chunk" == *"<|thinking|>"* ]]; then
+                        in_thinking_block=true
+                        printf "\n"
+                        print_color "$GRAY" "┌─ thinking..."
+                        printf "\n"
+                        # Extract any text after the thinking marker
+                        thinking_content="${decoded_chunk#*<|thinking|>}"
+                        if [[ -n "$thinking_content" ]]; then
+                            print_color "$GRAY" "│ $thinking_content"
+                        fi
+                    elif [[ "$decoded_chunk" == *"</|thinking|>"* ]]; then
+                        # Extract any text before the end thinking marker
+                        thinking_content="${decoded_chunk%</|thinking|>*}"
+                        if [[ -n "$thinking_content" ]]; then
+                            print_color "$GRAY" "│ $thinking_content"
+                        fi
+                        print_color "$GRAY" "└─"
+                        printf "\n"
+                        in_thinking_block=false
+                        # Extract any text after the end thinking marker
+                        remaining_content="${decoded_chunk#*</|thinking|>}"
+                        if [[ -n "$remaining_content" ]]; then
+                            printf "%s" "$remaining_content"
+                        fi
+                    elif [[ "$in_thinking_block" == "true" ]]; then
+                        # Inside thinking block - print in gray
+                        print_color "$GRAY" "│ $decoded_chunk"
+                    else
+                        # Normal streaming - print as usual
+                        printf "%s" "$decoded_chunk"
+                    fi
+                    
+                    # Always accumulate for final formatting
                     printf "%s" "$chunk" >> "$temp_file"
                 fi
             # SSE event line format: "event: done"

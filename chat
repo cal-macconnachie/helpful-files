@@ -123,6 +123,74 @@ format_ai_response() {
     rm -f "$temp_file"
 }
 
+# Function to delete content up to and including a specific token
+delete_to_token() {
+    local token="$1"
+    local content_to_delete="$2"  # The content that was streamed
+    
+    if [[ -z "$content_to_delete" ]]; then
+        return 0
+    fi
+    
+    # Decode the content to get actual printed content
+    local decoded_content=$(echo "$content_to_delete" | sed 's/<<NEWLINE>>/\n/g')
+    
+    # Count lines in the decoded content
+    local line_count=$(echo -n "$decoded_content" | grep -c $'\n')
+    
+    # Move cursor up by number of lines if there are any
+    if [[ $line_count -gt 0 ]]; then
+        printf "\033[${line_count}A"  # Move cursor up
+    fi
+    
+    # Move to beginning of line and clear everything from cursor down
+    printf "\r\033[0J"
+    
+    return 0
+}
+
+# Function to clear streamed content by tracking what was printed
+clear_streamed_content() {
+    local streamed_content="$1"
+    
+    if [[ -z "$streamed_content" ]]; then
+        return 0
+    fi
+    
+    # Decode the content to count actual lines printed
+    local decoded_content=$(echo "$streamed_content" | sed 's/<<NEWLINE>>/\n/g')
+    
+    # Count actual lines that were printed to terminal
+    local visible_lines=0
+    local terminal_width=$(tput cols)
+    
+    # Process each line to account for wrapping and ANSI codes
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Remove ANSI escape sequences for length calculation
+        local clean_line=$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g')
+        
+        if [[ ${#clean_line} -eq 0 ]]; then
+            # Empty line
+            ((visible_lines++))
+        else
+            # Calculate how many terminal lines this content line takes
+            local line_length=${#clean_line}
+            local wrapped_lines=$(( (line_length + terminal_width - 1) / terminal_width ))
+            visible_lines=$((visible_lines + wrapped_lines))
+        fi
+    done <<< "$decoded_content"
+    
+    # Move cursor up by the number of visible lines
+    if [[ $visible_lines -gt 0 ]]; then
+        printf "\033[${visible_lines}A"
+    fi
+    
+    # Clear from cursor to end of screen
+    printf "\r\033[0J"
+    
+    return 0
+}
+
 # Function to show thinking animation
 show_thinking_animation() {
     local thinking_chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -151,6 +219,7 @@ send_message() {
     local first_chunk_received=false
     local terminal_width=$(tput cols)
     local in_thinking_block=false
+    local streamed_content=""  # Track what we've streamed for deletion
     
     # Start thinking animation in background
     (
@@ -164,9 +233,6 @@ send_message() {
         done
     ) &
     local animation_pid=$!
-    
-    # Save cursor position before streaming starts
-    local cursor_save_point=""
     
     # Use process substitution to avoid subshell issues
     while IFS= read -r line; do
@@ -195,12 +261,14 @@ send_message() {
                         kill $animation_pid 2>/dev/null
                         wait $animation_pid 2>/dev/null
                         printf "\r                    \r"  # Clear any remaining thinking text
-                        # Save cursor position right before streaming starts
-                        printf "\033[s"  # Save cursor position
                         first_chunk_received=true
                     fi
+                    
                     # Decode <<NEWLINE>> back to actual newlines
                     decoded_chunk=$(echo "$chunk" | sed 's/<<NEWLINE>>/\n/g')
+                    
+                    # Track streamed content for potential deletion
+                    streamed_content="${streamed_content}${chunk}"
                     
                     # Check for thinking block markers in the chunk
                     if [[ "$decoded_chunk" == *"<|thinking|>"* ]]; then
@@ -264,10 +332,9 @@ send_message() {
             # Small delay to ensure all streaming is complete
             sleep 0.1
             
-            # Restore cursor to saved position and clear from there
-            if [[ "$first_chunk_received" == "true" ]]; then
-                printf "\033[u"  # Restore cursor position
-                printf "\033[0J"  # Clear from cursor to end of screen
+            # Clear the streamed content using our new function
+            if [[ "$first_chunk_received" == "true" && -n "$streamed_content" ]]; then
+                clear_streamed_content "$streamed_content"
             fi
             
             # Print the formatted version (trim leading/trailing whitespace)
